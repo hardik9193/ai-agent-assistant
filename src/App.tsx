@@ -7,6 +7,11 @@ import ReactMarkdown from "react-markdown";
 import "./App.css";
 import { documents } from "./documents";
 
+import * as pdfjsLib from "pdfjs-dist";
+import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+
 // API Key from .env file
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const WEATHER_KEY = import.meta.env.VITE_WEATHER_API_KEY;
@@ -116,8 +121,13 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const chatBoxRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const [cache, setCache] = useState<{ [key: string]: string }>({});
   const [chatHistory, setChatHistory] = useState<any[]>([]);
+
+  const [pdfDocs, setPdfDocs] = useState<{ topic: string; text: string }[]>([]);
+  const [pdfFileName, setPdfFileName] = useState("");
+  const [pdfLoading, setPdfLoading] = useState(false);
 
   // Tool executor
   const executeFunctionCall = async (
@@ -182,16 +192,29 @@ function App() {
     if (functionName === "searchDocs") {
       const query = args.query.toLowerCase();
 
-      const matched = documents.filter(
-        (doc) =>
-          doc.topic.toLowerCase().includes(query) ||
-          doc.text.toLowerCase().includes(query),
+      // Sirf uploaded PDF - koi document nahi to bolo upload karo
+      if (pdfDocs.length === 0) {
+        return JSON.stringify({
+          result:
+            "Koi document upload nahi hua. Pehle PDF upload karein, phir poochein.",
+        });
+      }
+      const allDocs = pdfDocs;
+
+      // Query ko words mein todo, koi bhi word match ho to lo
+      const words = query.split(" ");
+      const matched = allDocs.filter((doc) =>
+        words.some(
+          (word: any) =>
+            doc.text.toLowerCase().includes(word) ||
+            doc.topic.toLowerCase().includes(word),
+        ),
       );
 
       console.log("📚 Docs found:", matched.length);
 
       if (matched.length === 0) {
-        return JSON.stringify({ result: "No matching policy found" });
+        return JSON.stringify({ result: "No matching info found" });
       }
 
       return JSON.stringify({ documents: matched });
@@ -228,8 +251,69 @@ function App() {
       await new Promise((resolve) => setTimeout(resolve, 40));
     }
   };
+
+  // PDF se text nikaalne wala function
+  const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPdfLoading(true);
+
+    console.log("📄 PDF loading:", file.name);
+
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+    let fullText = "";
+
+    // Har page ka text nikaalo
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      const pageText = content.items.map((item: any) => item.str).join(" ");
+      fullText += pageText + "\n";
+    }
+
+    console.log("✅ PDF text extracted:", fullText.length, "characters");
+    console.log("Preview:", fullText.substring(0, 200));
+
+    //PDF text ko chunk mein thodo
+    const chunks = [];
+    for (let i = 0; i < fullText.length; i += 200) {
+      chunks.push({
+        topic: `pdf-part-${i / 200 + 1}`,
+        text: fullText.substring(i, i + 200),
+      });
+    }
+    setPdfDocs(chunks);
+    setPdfFileName(file.name);
+    setCache({});
+    setChatHistory((prev) => [
+      ...prev,
+      {
+        role: "user",
+        parts: [
+          {
+            text: `Maine ab "${file.name}" document upload kiya hai. Mere pichle aur aage ke sawaalon ka jawab ab is document se searchDocs use karke do.`,
+          },
+        ],
+      },
+      {
+        role: "model",
+        parts: [
+          {
+            text: `Theek hai Hardik! "${file.name}" ready hai. Ab main aapke sawaalon ka jawab is document se dhund ke dunga.`,
+          },
+        ],
+      },
+    ]);
+    setPdfLoading(false);
+
+    e.target.value = "";
+    console.log("📚 PDF chunks banaye:", chunks.length);
+  };
   // Send message (agent loop + cache + memory)
   const sendMessage = async () => {
+    if (loading) return;
     if (!input.trim()) return;
 
     const userMessage: Message = { role: "user", text: input };
@@ -297,12 +381,15 @@ function App() {
       let userFriendlyError = "Kuch galat ho gaya. Please try again.";
       if (error.message?.includes("429")) {
         userFriendlyError = "⏰ Rate limit hit! Wait 1 minute.";
+      } else if (error.message?.includes("503")) {
+        userFriendlyError = "🔄 Server busy hai abhi. 5 second baad try karo.";
       } else if (error.message?.includes("API key")) {
         userFriendlyError = "🔑 API key invalid.";
       }
       setMessages((prev) => [...prev, { role: "ai", text: userFriendlyError }]);
     } finally {
       setLoading(false);
+      inputRef.current?.focus(); // 🆕 focus wapas input pe
     }
   };
 
@@ -351,11 +438,31 @@ function App() {
       <header className="chat-header">
         <div className="header-brand">
           <div className="brand-avatar">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <path
-                d="M12 2L14.4 8.6L21 9.2L16.2 13.6L17.8 20.4L12 16.8L6.2 20.4L7.8 13.6L3 9.2L9.6 8.6L12 2Z"
-                fill="white"
+            <svg width="42" height="42" viewBox="0 0 42 42" fill="none">
+              <rect y="0" width="42" height="14" fill="#FF9933" />
+              <rect y="14" width="42" height="14" fill="#fff" />
+              <rect y="28" width="42" height="14" fill="#138808" />
+              <circle
+                cx="21"
+                cy="21"
+                r="5"
+                fill="none"
+                stroke="#000080"
+                strokeWidth="0.8"
               />
+              <circle cx="21" cy="21" r="1" fill="#000080" />
+              {Array.from({ length: 24 }).map((_, i) => (
+                <line
+                  key={i}
+                  x1="21"
+                  y1="21"
+                  x2="21"
+                  y2="16"
+                  stroke="#000080"
+                  strokeWidth="0.4"
+                  transform={`rotate(${i * 15} 21 21)`}
+                />
+              ))}
             </svg>
           </div>
           <div>
@@ -365,6 +472,7 @@ function App() {
             </div>
           </div>
         </div>
+
         {messages.length > 0 && (
           <button className="clear-btn" onClick={clearChat}>
             <svg
@@ -461,14 +569,121 @@ function App() {
 
       {/* Input Bar */}
       <div className="input-zone">
+        {pdfLoading && (
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "8px",
+              background: "#f0f1fa",
+              borderRadius: "8px",
+              padding: "8px 12px",
+              marginBottom: "8px",
+              fontSize: "12px",
+              color: "#2526B3",
+            }}
+          >
+            <span
+              style={{
+                width: "14px",
+                height: "14px",
+                border: "2px solid #c9cbf5",
+                borderTopColor: "#2526B3",
+                borderRadius: "50%",
+                display: "inline-block",
+                animation: "spin 0.7s linear infinite",
+              }}
+            />
+            PDF processing...
+          </div>
+        )}
+
+        {pdfFileName && (
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "8px",
+              background: "#eafaf1",
+              border: "1px solid #35c47d",
+              borderRadius: "8px",
+              padding: "6px 10px",
+              marginBottom: "8px",
+              maxWidth: "220px",
+            }}
+          >
+            <span style={{ fontSize: "16px" }}>✅</span>
+            <div style={{ flex: 1, overflow: "hidden" }}>
+              <div
+                style={{
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  color: "#171713",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {pdfFileName}
+              </div>
+              <div
+                style={{ fontSize: "10px", color: "#35c47d", fontWeight: 500 }}
+              >
+                Uploaded successfully
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                setPdfFileName("");
+                setPdfDocs([]);
+              }}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                fontSize: "13px",
+                color: "#8a8d98",
+                padding: 0,
+                lineHeight: 1,
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
         <div className="input-pill">
+          <label
+            style={{
+              width: "34px",
+              height: "34px",
+              borderRadius: "50%",
+              background: "#f0f1fa",
+              border: "1px solid #e2e3ee",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              flexShrink: 0,
+              fontSize: "20px",
+              color: "#2526B3",
+              fontWeight: 400,
+            }}
+          >
+            +
+            <input
+              type="file"
+              accept=".pdf"
+              onChange={handlePdfUpload}
+              style={{ display: "none" }}
+            />
+          </label>
           <input
             type="text"
+            ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyPress}
             placeholder="Ask anything..."
-            disabled={loading}
           />
           <button
             className="send-btn"
@@ -492,16 +707,20 @@ function App() {
       {/* Styles */}
       <style>{`
         * { box-sizing: border-box; }
-
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
         .app-shell {
           display: flex;
           flex-direction: column;
-          height: 100vh;
+          height: 100%;
           max-width: 860px;
           margin: 0 auto;
           background: #fff;
           font-family: 'Roboto', system-ui, sans-serif;
           box-shadow: 0 0 40px rgba(37, 38, 179, 0.06);
+          border-radius: 8px;
+          overflow: hidden;
         }
 
         /* ---------- Header ---------- */
@@ -516,12 +735,13 @@ function App() {
         }
         .header-brand { display: flex; align-items: center; gap: 12px; }
         .brand-avatar {
-          width: 42px; height: 42px;
+          width: 35px; height: 35px;
           border-radius: 13px;
-          background: linear-gradient(135deg, #2526B3 0%, #5a5be0 100%);
+          overflow: hidden;
           display: flex; align-items: center; justify-content: center;
           box-shadow: 0 4px 12px rgba(37, 38, 179, 0.25);
         }
+        .brand-avatar svg { width: 100%; height: 100%; }
         .brand-name { font-size: 15.5px; font-weight: 600; color: #171713; letter-spacing: -0.2px; }
         .brand-status { font-size: 12px; color: #8a8d98; display: flex; align-items: center; gap: 6px; margin-top: 2px; }
         .status-dot {
@@ -559,7 +779,7 @@ function App() {
         /* ---------- Chat Area ---------- */
        .chat-area {
   flex: 1;
-  background: #f8f9fd;
+  background: #fff;
 }
 
         /* ---------- Welcome ---------- */
@@ -721,11 +941,11 @@ function App() {
         .input-pill {
           display: flex;
           align-items: center;
-          gap: 10px;
+          gap: 8px;
           background: #fff;
           border: 1.5px solid #e2e3ee;
           border-radius: 16px;
-          padding: 6px 6px 6px 20px;
+          padding: 8px 8px 8px 10px;
           transition: all 0.2s ease;
           box-shadow: 0 2px 10px rgba(20, 20, 60, 0.04);
         }
