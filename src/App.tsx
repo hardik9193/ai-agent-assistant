@@ -5,6 +5,7 @@ import { useState, useRef, useEffect } from "react";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import ReactMarkdown from "react-markdown";
 import "./App.css";
+import { documents } from "./documents";
 
 // API Key from .env file
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
@@ -69,6 +70,22 @@ const tools = [
             },
           },
           required: ["city"],
+        },
+      },
+      // Tool 5: Search HR Documents (RAG!)
+      {
+        name: "searchDocs",
+        description:
+          "Searches company HR policy documents. Use when user asks about leaves, work from home, working hours, holidays, insurance, or any HR policy question.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "Search keywords like 'leave', 'wfh', 'holiday'",
+            },
+          },
+          required: ["query"],
         },
       },
     ],
@@ -160,6 +177,26 @@ function App() {
         return JSON.stringify({ error: "Weather fetch failed" });
       }
     }
+
+    // Tool 5: Search Docs (RAG - Retrieve!)
+    if (functionName === "searchDocs") {
+      const query = args.query.toLowerCase();
+
+      const matched = documents.filter(
+        (doc) =>
+          doc.topic.toLowerCase().includes(query) ||
+          doc.text.toLowerCase().includes(query),
+      );
+
+      console.log("📚 Docs found:", matched.length);
+
+      if (matched.length === 0) {
+        return JSON.stringify({ result: "No matching policy found" });
+      }
+
+      return JSON.stringify({ documents: matched });
+    }
+
     return JSON.stringify({ error: "Unknown function" });
   };
 
