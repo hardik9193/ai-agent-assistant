@@ -1,0 +1,17 @@
+:root {
+  font-family: "Roboto", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background-color: #f6f7fc;
+}
+
+#root {
+  height: 100%;
+}
