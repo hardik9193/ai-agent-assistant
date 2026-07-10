@@ -19,6 +19,30 @@ const WEATHER_KEY = import.meta.env.VITE_WEATHER_API_KEY;
 // Gemini AI initialize
 const genAI = new GoogleGenerativeAI(API_KEY);
 
+// Embedding model - ek baar banao, sab jagah use
+const embeddingModel = genAI.getGenerativeModel({
+  model: "gemini-embedding-001",
+});
+
+// Text → numbers
+const getEmbedding = async (text: string): Promise<number[]> => {
+  const r = await embeddingModel.embedContent(text);
+  return r.embedding.values;
+};
+
+// 2 arrays kitne similar (0-1)
+const cosineSimilarity = (a: number[], b: number[]) => {
+  let dot = 0,
+    magA = 0,
+    magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+};
+
 // Tool definitions
 const tools = [
   {
@@ -125,7 +149,9 @@ function App() {
   const [cache, setCache] = useState<{ [key: string]: string }>({});
   const [chatHistory, setChatHistory] = useState<any[]>([]);
 
-  const [pdfDocs, setPdfDocs] = useState<{ topic: string; text: string }[]>([]);
+  const [pdfDocs, setPdfDocs] = useState<
+    { topic: string; text: string; embedding: number[] }[]
+  >([]);
   const [pdfFileName, setPdfFileName] = useState("");
   const [pdfLoading, setPdfLoading] = useState(false);
 
@@ -190,34 +216,34 @@ function App() {
 
     // Tool 5: Search Docs (RAG - Retrieve!)
     if (functionName === "searchDocs") {
-      const query = args.query.toLowerCase();
-
-      // Sirf uploaded PDF - koi document nahi to bolo upload karo
+      // Koi PDF nahi to bolo
       if (pdfDocs.length === 0) {
         return JSON.stringify({
-          result:
-            "Koi document upload nahi hua. Pehle PDF upload karein, phir poochein.",
+          result: "Koi document upload nahi hua. Pehle PDF upload karein.",
         });
       }
-      const allDocs = pdfDocs;
 
-      // Query ko words mein todo, koi bhi word match ho to lo
-      const words = query.split(" ");
-      const matched = allDocs.filter((doc) =>
-        words.some(
-          (word: any) =>
-            doc.text.toLowerCase().includes(word) ||
-            doc.topic.toLowerCase().includes(word),
-        ),
+      // 1. Query ka embedding banao
+      const queryEmbedding = await getEmbedding(args.query);
+
+      // 2. Har chunk ka similarity score nikaalo
+      const scored = pdfDocs.map((doc) => ({
+        text: doc.text,
+        score: cosineSimilarity(queryEmbedding, doc.embedding),
+      }));
+
+      // 3. Sabse HIGH score wale upar (sort)
+      scored.sort((a, b) => b.score - a.score);
+
+      // 4. Top 2 chunks lo
+      const top = scored.slice(0, 2);
+
+      console.log(
+        "📚 Top matches (score):",
+        top.map((d) => d.score.toFixed(3)),
       );
 
-      console.log("📚 Docs found:", matched.length);
-
-      if (matched.length === 0) {
-        return JSON.stringify({ result: "No matching info found" });
-      }
-
-      return JSON.stringify({ documents: matched });
+      return JSON.stringify({ documents: top });
     }
 
     return JSON.stringify({ error: "Unknown function" });
@@ -279,9 +305,12 @@ function App() {
     //PDF text ko chunk mein thodo
     const chunks = [];
     for (let i = 0; i < fullText.length; i += 200) {
+      const text = fullText.substring(i, i + 200);
+      const embedding = await getEmbedding(text); // 🆕 har chunk ka embedding
       chunks.push({
         topic: `pdf-part-${i / 200 + 1}`,
-        text: fullText.substring(i, i + 200),
+        text,
+        embedding, // 🆕 store karo
       });
     }
     setPdfDocs(chunks);
@@ -311,6 +340,7 @@ function App() {
     e.target.value = "";
     console.log("📚 PDF chunks banaye:", chunks.length);
   };
+
   // Send message (agent loop + cache + memory)
   const sendMessage = async () => {
     if (loading) return;
@@ -474,7 +504,14 @@ function App() {
         </div>
 
         {messages.length > 0 && (
-          <button className="clear-btn" onClick={clearChat}>
+          <button
+            className="clear-btn"
+            onClick={() => {
+              setMessages([]);
+              setChatHistory([]);
+              setCache({});
+            }}
+          >
             <svg
               width="14"
               height="14"
